@@ -33,7 +33,7 @@ StaticJsonBuffer<RH_RF95_MAX_MESSAGE_LEN> jsonBuffer;
 void setup() {
   Serial.begin(115200);
   delay(100);
-  Serial.println(F("Send-To-Node program running"));
+  Serial.println(F("Receive-From-Node program running"));
   
   radio_init();
 

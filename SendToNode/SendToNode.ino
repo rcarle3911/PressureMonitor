@@ -23,6 +23,7 @@
 #define RF95_FREQ 915.0
 #define NODEID 2
 #define SEND_TO_NODE_ID 3
+#define PRESSURE_READ_PIN A1
 
 // Singleton instance of the radio driver
 RH_RF95 rf95(RFM95_CS, RFM95_INT);
@@ -38,23 +39,19 @@ void setup() {
   Serial.println(F("Send-To-Node program running"));
   
   radio_init();
-
-  randomSeed(analogRead(0));
 }
 
 void loop() {
   JsonObject& root = jsonBuffer.createObject();
-
-  char report[255];
-  uint16_t data = random(1, 5000);
+  
+  float data = readPressure(PRESSURE_READ_PIN);
 
   root[F("to")] = SEND_TO_NODE_ID;
   root[F("fr")] = NODEID;
-  root[F("pd")] = data / 100.0;
+  root[F("pd")] = data;
   root[F("m")] = mid++;
 
-  sprintf(report, "Sending %d.%d to %d from %d", data / 100, data % 100, SEND_TO_NODE_ID, NODEID);
-  Serial.println(report);
+  Serial.print("Sending ");Serial.print(data);Serial.print("  to ");Serial.print(SEND_TO_NODE_ID);Serial.print(" from ");Serial.println(NODEID);
 
   root.printTo((char*)rx_buf, rx_len);
   jsonBuffer.clear();
@@ -66,6 +63,20 @@ void loop() {
     Serial.println("Failed to send");
   }
   delay(2000);
+}
+
+float readPressure(uint8_t _pin) {  
+  // 0.5V = 0 psi = 102
+  // 4.5V = 150 psi = 922
+  // 0.5 - 4.5 = 0.183 psi per 1 step
+  uint16_t val = analogRead(_pin);
+  if (val <= 102) {
+    return 0.0;
+  } else if (val >= 922) {
+    return 150.0;
+  } else {
+    return (val - 102) * 0.183;
+  }
 }
 
 void radio_init() {
