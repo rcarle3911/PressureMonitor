@@ -13,7 +13,8 @@
 // Opcodes
 #define SEEK_GATE 100
 #define GATE_LINK 101
-#define PAYLOAD 0 // 0-99 Reserved for payload if needed for future
+#define PAYLOAD_MIN 0 // 0-99 Reserved for payload if needed for future
+#define PAYLOAD_MAX 99
 
 #define RFM95_CS 4
 #define RFM95_RST 2
@@ -21,7 +22,9 @@
 
 #define RF95_FREQ 915.0
 
-#define PRESSURE_READ_PIN A1
+//#define PRESSURE_READ_PIN A1
+uint8_t pressurePins[] = {A1};
+
 #define DEBUG_ENABLED 1 // Set to 0 to turn off print statements.
 #define SEND_WAIT_TIMEOUT 500 // In milliseconds
 #define UPDATE_MIN_TIME 3000 // In milliseconds. 300000 = 5 minutes
@@ -45,15 +48,25 @@ typedef union
 void setup() {
   Serial.begin(115200);
   delay(100);
+
   if (NODEID > 127 || NODEID < 0) {
     Serial.println(F("Invalid NODEID configured"));
     while(1) {
       delay(500);
     }
   }
-  Serial.print(F("Water Pressure Node "));Serial.print(NODEID);Serial.println(F(" running..."));
+
+  if (sizeof(pressurePins) > PAYLOAD_MAX) {
+    Serial.print(F("Too many pressure pins. Must be less than "));Serial.println(PAYLOAD_MAX + 1);
+    while(1) {
+      delay(500);
+    }
+  }
+
+  Serial.print(F("Water Pressure Node "));Serial.print(NODEID);Serial.println(F(" intializing..."));
   radio_init();
-  seekGate();  
+  seekGate();
+  Serial.print(F("Main program starting..."));
 }
 
 void seekGate() {
@@ -135,8 +148,9 @@ void seekGate() {
 void loop() {
 
   checkIncoming(); // Waits for incoming messages and forwards them to the next node
-  sendPressureData(NODEID, readPressure(PRESSURE_READ_PIN)); // Sends own pressure data
-  
+  for ( byte i = 0; i < sizeof(pressurePins); i++ ) {
+    sendPressureData(NODEID, i, readPressure(pressurePins[i])); // Sends own pressure data
+  }
 }
 
 bool sentToMe (uint8_t *packet) {
@@ -153,14 +167,15 @@ void checkIncoming() {
 
         if (opcode == SEEK_GATE) {
           linkToGate(buf[1]);
-        } else if (opcode == PAYLOAD) {
+        } else if (opcode >= PAYLOAD_MIN && opcode <= PAYLOAD_MAX) {
           if (sentToMe(buf)) {
-            decodePayload(buf);
+            buf[1] = nextNode; // Forward to gate route
+            sendData(buf, buf_len);
           }
         }
       }
     }
-  } while (millis() < lastSentTime + UPDATE_MIN_TIME);
+  } while (millis() - lastSentTime < UPDATE_MIN_TIME);
 }
 
 void linkToGate(uint8_t toNode) {
@@ -179,25 +194,10 @@ void linkToGate(uint8_t toNode) {
   }
 }
 
-void decodePayload(uint8_t *packet) {
-  
-  FLOAT_ARRAY pyld;
-  
-  pyld.bytes[0] = packet[3];
-  pyld.bytes[1] = packet[4];
-  pyld.bytes[2] = packet[5];
-  pyld.bytes[3] = packet[6];
-
-  if (DEBUG_ENABLED) {
-    Serial.print(F("Received payload: "));Serial.println(pyld.num);
-  }
-  sendPressureData(packet[2], pyld.num);
-}
-
-void sendPressureData(uint8_t from, float data) {
+void sendPressureData(uint8_t from, uint8_t payloadID, float data) {
 
   // Build packet
-  buf[0] = PAYLOAD;
+  buf[0] = PAYLOAD_MIN + payloadID;
   buf[1] = nextNode;
   buf[2] = from;
 
@@ -209,10 +209,14 @@ void sendPressureData(uint8_t from, float data) {
   buf[4] = pyld.bytes[1];
   buf[5] = pyld.bytes[2];
   buf[6] = pyld.bytes[3];
-  
-  rf95.send(buf, buf_len);
+
+  sendData(buf, buf_len);
+}
+
+void sendData(uint8_t *packet, uint8_t packetSize) {
+  rf95.send(packet, packetSize);
   if (rf95.waitPacketSent(SEND_WAIT_TIMEOUT)) {
-    if (from == NODEID) {
+    if (packet[2] == NODEID) {
       lastSentTime = millis();
     }
     if (DEBUG_ENABLED) {

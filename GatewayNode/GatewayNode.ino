@@ -10,7 +10,8 @@
 // Opcodes
 #define SEEK_GATE 100
 #define GATE_LINK 101
-#define PAYLOAD 0 // 0-99 Reserved for payload if needed for future
+#define PAYLOAD_MIN 0 // 0-99 Reserved for payload if needed for future
+#define PAYLOAD_MAX 99
 
 #ifdef ESP8266
 #define RFM95_CS 15
@@ -62,9 +63,9 @@ void loop() {
       uint8_t opcode = buf[0];
       if ( opcode == SEEK_GATE ) {
         linkToGate(buf[1]);
-      } else if ( opcode == PAYLOAD ) {
+      } else if ( opcode >= PAYLOAD_MIN && opcode <= PAYLOAD_MAX ) {
         if (sentToMe(buf)) {
-          decodePayload(buf);
+          Blynk.virtualWrite(decodeBlinkPin(buf), decodePayload(buf));
         }
       }
     }
@@ -72,7 +73,7 @@ void loop() {
   Blynk.run();
 }
 
-void decodePayload(uint8_t *packet) {
+float decodePayload(uint8_t *packet) {
   
   FLOAT_ARRAY pyld;
   
@@ -83,7 +84,11 @@ void decodePayload(uint8_t *packet) {
 
   Serial.print("Received payload: ");Serial.println(pyld.num);
 
-  Blynk.virtualWrite(packet[2], pyld.num);
+  return pyld.num;
+}
+
+uint8_t decodeBlinkPin(uint8_t *packet) {
+  return packet[2] + packet[0]; //Blink pin is nodeID plus payloadID
 }
 
 void linkToGate(uint8_t toNode) {
