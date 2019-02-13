@@ -74,7 +74,16 @@ void seekGate() {
   unsigned long seekTime = 5000; // Milliseconds
 
   bool gateLinkFound = false;
+  
+  int8_t rssiValues[255];// RSSI map to each possible node id
+  uint8_t hopValues[255];// Hops to gate from each node
 
+  for (byte i = 0; i < 255; i++) {
+    rssiValues[i] = -128; // Lowest signal possible
+    hopValues[i] = 255;   // Max hops allowed
+  }
+  
+  
   while (!gateLinkFound) {
     
     bool sent = false;
@@ -90,10 +99,7 @@ void seekGate() {
     }
 
     unsigned long startTime = millis();
-
-    int8_t rssiValues[255] = {-128}; // RSSI map to each possible node id
-    uint8_t hopValues[255] = {255}; // Hops to gate from each node
-
+    
     while (millis() - startTime < seekTime) { // Gather information for nearby nodes
       if (rf95.waitAvailableTimeout(500)) {
         if (rf95.recv(buf, &buf_len)) {
@@ -142,6 +148,10 @@ void seekGate() {
 
   if (DEBUG_ENABLED) {
     Serial.println(F("Route to gate found"));
+    Serial.print(F("NODE: "));Serial.println(nextNode);
+    Serial.print(F("RSSI: "));Serial.println(rssiValues[nextNode]);
+    Serial.print(F("Hops: "));Serial.println(hops);
+    
   }
 }
 
