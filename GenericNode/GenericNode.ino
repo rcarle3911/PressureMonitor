@@ -3,12 +3,13 @@
  */
 
 #define NODEID 1 // Make sure this is unique and less than 128
- 
+
+#include <RHReliableDatagram.h>
 #include <SPI.h>
 #include <RH_RF95.h>
 #define TXPOWER 5 // TX power in dbm. (Range of 5 - 23)
 
-#define MSG_MAX_LEN 7 // [Opcode: 1][ToNode: 1][FromNode: 1][Payload: 4]
+#define MSG_MAX_LEN 6 // [Opcode: 1][Origin: 1][Payload: 4]
 
 // Opcodes
 #define SEEK_GATE 100
@@ -16,21 +17,15 @@
 #define PAYLOAD_MIN 0 // 0-99 Reserved for payload if needed for future
 #define PAYLOAD_MAX 99
 
-#define RFM95_CS 4
-#define RFM95_RST 2
-#define RFM95_INT 3
-
 #define RF95_FREQ 915.0
-
-//#define PRESSURE_READ_PIN A1
-uint8_t pressurePins[] = {A1};
 
 #define DEBUG_ENABLED 1 // Set to 0 to turn off print statements.
 #define SEND_WAIT_TIMEOUT 500 // In milliseconds
 #define UPDATE_MIN_TIME 3000 // In milliseconds. 300000 = 5 minutes
 
 // Singleton instance of the radio driver
-RH_RF95 rf95(RFM95_CS, RFM95_INT);
+RH_RF95 rf95;
+RHReliableDatagram manager(rf95, NODEID);
 
 uint8_t buf[MSG_MAX_LEN];
 uint8_t buf_len = sizeof(buf);
@@ -42,8 +37,56 @@ uint8_t hops;
 typedef union
 {
     float num;
-    byte bytes[4];
+    uint8_t bytes[4];
 } FLOAT_ARRAY;
+
+
+// 0.5V = 0 psi = 102
+// 4.5V = 150 psi = 922
+// 0.5 - 4.5 = 0.183 psi per 1 step
+float sensor0ToFloat( uint16_t val ) {
+  if (val <= 102) {
+    return 0.0;
+  } else if (val >= 922) {
+    return 150.0;
+  } else {
+    return (val - 102) * 0.183;
+  }
+}
+
+// A different calibration function.
+// Analog read returns a value from 0 to 1024.
+// This function should convert that into a decimal depending on the sensor specs.
+float sensor1ToFloat( uint16_t val ) {
+  if (val <= 50) {
+    return 0.0;
+  } else if (val >= 1015) {
+    return 200.0;
+  } else {
+    return (val - 50) * 0.207;
+  }
+}
+
+struct SensorMap {
+  uint8_t pin;
+  float (*toPressure)(uint16_t);
+  unsigned long lastSent;
+} sensors[] = {
+
+  // The following contains the pin and associated function to run to convert the result
+  // of analogRead into a floating point (decimal)
+  {
+    pin: A1,
+    toPressure: sensor0ToFloat,
+    lastSent: 0
+  },
+  {
+    pin: A2,
+    toPressure: sensor1ToFloat,
+    lastSent: 0
+  }
+
+};
 
 void setup() {
   Serial.begin(115200);
@@ -56,7 +99,7 @@ void setup() {
     }
   }
 
-  if (sizeof(pressurePins) > PAYLOAD_MAX) {
+  if ( sizeof(sensors) / sizeof(SensorMap) > PAYLOAD_MAX ) {
     Serial.print(F("Too many pressure pins. Must be less than "));Serial.println(PAYLOAD_MAX + 1);
     while(1) {
       delay(500);
@@ -71,7 +114,7 @@ void setup() {
 
 void seekGate() {
 
-  unsigned long seekTime = 5000; // Milliseconds
+  unsigned long seekTime = 10000; // Milliseconds
 
   bool gateLinkFound = false;
   
@@ -81,41 +124,42 @@ void seekGate() {
   for (byte i = 0; i < 255; i++) {
     rssiValues[i] = -128; // Lowest signal possible
     hopValues[i] = 255;   // Max hops allowed
-  }
-  
+  }  
   
   while (!gateLinkFound) {
-    
-    bool sent = false;
   
-    while (!sent) {
-      buf[0] = SEEK_GATE;
-      buf[1] = NODEID;
-    
-      rf95.send(buf, buf_len);
-      if (rf95.waitPacketSent(500)) {
-        sent = true;
-      }
-    }
+    buf[0] = SEEK_GATE;
+  
+    manager.sendtoWait( buf, buf_len, 255); //Broadcast to all
 
     unsigned long startTime = millis();
+    lastSentTime = millis();
     
     while (millis() - startTime < seekTime) { // Gather information for nearby nodes
-      if (rf95.waitAvailableTimeout(500)) {
-        if (rf95.recv(buf, &buf_len)) {
-          if(buf[0] == GATE_LINK) {
-            if (sentToMe(buf)) {
-              rssiValues[buf[2]] = buf[3]; // Save rssi value
-              hopValues[buf[2]] = buf[4]; // Save hops
+      if ( manager.waitAvailableTimeout( SEND_WAIT_TIMEOUT )) {
+        
+        uint8_t from;
+        uint8_t to;
+        uint8_t id;
 
-              if (DEBUG_ENABLED) {
-                Serial.print(F("NODE: "));Serial.println(buf[2]);
-                Serial.print(F("RSSI: "));Serial.println(rssiValues[buf[2]], DEC);
-                Serial.print(F("Hops: "));Serial.println(hopValues[buf[2]]);
-              }
-            }
+        if ( manager.recvfromAck( buf, &buf_len, &from, &to, &id )) {
+          if(buf[0] == GATE_LINK) {
+            
+            rssiValues[from] = buf[1]; // Save rssi value
+            hopValues[from] = buf[2]; // Save hops
+
+            if (DEBUG_ENABLED) {
+              Serial.print(F("NODE: "));Serial.println(buf[2]);
+              Serial.print(F("RSSI: "));Serial.println(rssiValues[buf[2]], DEC);
+              Serial.print(F("Hops: "));Serial.println(hopValues[buf[2]]);
+            }            
           }
         }
+      }
+      if ( millis() - lastSentTime > UPDATE_MIN_TIME) {
+        buf[0] = SEEK_GATE;
+        manager.sendtoWait( buf, buf_len, 255); //Broadcast to all
+        lastSentTime = millis();
       }
     }
 
@@ -140,7 +184,7 @@ void seekGate() {
         gateLinkFound = true;
         nextNode = maxNode;
         hops = hopValues[maxNode]++;
-      } else {
+      } else if (DEBUG_ENABLED) {
         Serial.println(F("Failed to link to gate. Trying again..."));
       }
     }
@@ -158,109 +202,84 @@ void seekGate() {
 void loop() {
 
   checkIncoming(); // Waits for incoming messages and forwards them to the next node
-  for ( byte i = 0; i < sizeof(pressurePins); i++ ) {
-    sendPressureData(NODEID, i, readPressure(pressurePins[i])); // Sends own pressure data
+  // Loops through all sensors and sends their data.
+  for ( byte i = 0; i < sizeof(sensors)/sizeof(SensorMap); i++) {
+    if (millis() - sensors[i].lastSent > UPDATE_MIN_TIME) {
+      if (sendPressureData( i, sensors[i].toPressure( analogRead( sensors[i].pin ) ) )) {
+        sensors[i].lastSent = millis();
+        break;
+      }
+    }
   }
-}
-
-bool sentToMe (uint8_t *packet) {
-  return packet[1] == NODEID;
 }
 
 void checkIncoming() {
 
-  do {
-    if (rf95.waitAvailableTimeout(UPDATE_MIN_TIME)) {
-      if (rf95.recv(buf, &buf_len)) {
+  if ( manager.available() ) {
+    uint8_t from;
+    uint8_t to;
+    uint8_t id;
+    if ( manager.recvfromAck( buf, &buf_len, &from, &to, &id )) {
 
-        uint8_t opcode = buf[0];
+      uint8_t opcode = buf[0];
 
-        if (opcode == SEEK_GATE) {
-          linkToGate(buf[1]);
-        } else if (opcode >= PAYLOAD_MIN && opcode <= PAYLOAD_MAX) {
-          if (sentToMe(buf)) {
-            buf[1] = nextNode; // Forward to gate route
-            sendData(buf, buf_len);
+      if (opcode == SEEK_GATE) {
+        if ( linkToGate( from )) {
+          if (DEBUG_ENABLED) {
+            Serial.println(F("Successful link to gate"));
           }
+        } else if (DEBUG_ENABLED) {
+          Serial.println(F("Failed to link to gate"));
         }
+      } else if (opcode >= PAYLOAD_MIN && opcode <= PAYLOAD_MAX) {
+        sendDataPacket( buf, buf_len, nextNode );
       }
     }
-  } while (millis() - lastSentTime < UPDATE_MIN_TIME);
-}
-
-void linkToGate(uint8_t toNode) {
-  // Build response message
-  buf[0] = GATE_LINK;
-  buf[1] = toNode;
-  buf[2] = NODEID;
-  buf[3] = rf95.lastRssi();
-  buf[4] = hops;
-
-  rf95.send(buf, buf_len);
-  if (rf95.waitPacketSent(50)) {
-    Serial.println(F("Sent gate link"));
-  } else {
-    Serial.println(F("Failed to send"));
   }
 }
 
-void sendPressureData(uint8_t from, uint8_t payloadID, float data) {
+bool linkToGate( uint8_t toNode ) {
+  // Build response message
+  buf[0] = GATE_LINK;
+  buf[1] = rf95.lastRssi();
+  buf[2] = hops;
+
+  return sendDataPacket( buf, buf_len, toNode );
+}
+
+bool sendPressureData( uint8_t payloadID, float data ) {
 
   // Build packet
   buf[0] = PAYLOAD_MIN + payloadID;
-  buf[1] = nextNode;
-  buf[2] = from;
 
   FLOAT_ARRAY pyld;
 
   pyld.num = data;
+  buf[1] = NODEID;
+  buf[2] = pyld.bytes[0];
+  buf[3] = pyld.bytes[1];
+  buf[4] = pyld.bytes[2];
+  buf[5] = pyld.bytes[3];
 
-  buf[3] = pyld.bytes[0];
-  buf[4] = pyld.bytes[1];
-  buf[5] = pyld.bytes[2];
-  buf[6] = pyld.bytes[3];
-
-  sendData(buf, buf_len);
+  return sendDataPacket(buf, buf_len, nextNode);
 }
 
-void sendData(uint8_t *packet, uint8_t packetSize) {
-  rf95.send(packet, packetSize);
-  if (rf95.waitPacketSent(SEND_WAIT_TIMEOUT)) {
-    if (packet[2] == NODEID) {
-      lastSentTime = millis();
-    }
+bool sendDataPacket(uint8_t *packet, uint8_t packetSize, uint8_t to) {
+
+  if ( manager.sendtoWait( packet, packetSize, to )) {
     if (DEBUG_ENABLED) {
       Serial.println(F("Sent"));
     }
-  } else {
+    return true;
+  } else if (DEBUG_ENABLED) {
     Serial.println(F("Failed to send"));
-  }
-}
-
-float readPressure(uint8_t _pin) {  
-  // 0.5V = 0 psi = 102
-  // 4.5V = 150 psi = 922
-  // 0.5 - 4.5 = 0.183 psi per 1 step
-  uint16_t val = analogRead(_pin);
-  if (val <= 102) {
-    return 0.0;
-  } else if (val >= 922) {
-    return 150.0;
-  } else {
-    return (val - 102) * 0.183;
+    return false;
   }
 }
 
 void radio_init() {
-  pinMode(RFM95_RST, OUTPUT);
-  digitalWrite(RFM95_RST, HIGH);
-  // manual reset
-  digitalWrite(RFM95_RST, LOW);
-  delay(10);
-  digitalWrite(RFM95_RST, HIGH);
-  delay(10);
-
-  while (!rf95.init()) {
+  
+  while (!manager.init()) {
     Serial.println(F("LoRa radio init failed"));
     while (1) {
       delay(100);
@@ -283,4 +302,6 @@ void radio_init() {
   // If you are using RFM95/96/97/98 modules which uses the PA_BOOST transmitter pin, then 
   // you can set transmitter powers from 5 to 23 dBm:
   rf95.setTxPower(TXPOWER, false);
+
+  manager.setTimeout(SEND_WAIT_TIMEOUT);
 }
