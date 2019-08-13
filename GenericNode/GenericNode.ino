@@ -2,14 +2,14 @@
  * Generic Node sketch to load on arduino's with pressure monitoring system. Will need NODEID configured.
  */
 
-#define NODEID 1 // Make sure this is unique and less than 128
+#define NODEID 10 // Make sure this is unique and less than 128
 
 #include <RHReliableDatagram.h>
 #include <SPI.h>
 #include <RH_RF95.h>
 #define TXPOWER 5 // TX power in dbm. (Range of 5 - 23)
 
-#define MSG_MAX_LEN 6 // [Opcode: 1][Origin: 1][Payload: 4]
+#define MSG_MAX_LEN 7 // [Opcode: 1][Origin: 1][Payload: 4][RSSI: 1]
 
 // Opcodes
 #define SEEK_GATE 100
@@ -21,7 +21,7 @@
 
 #define DEBUG_ENABLED 1 // Set to 0 to turn off print statements.
 #define SEND_WAIT_TIMEOUT 500 // In milliseconds
-#define UPDATE_MIN_TIME 3000 // In milliseconds. 300000 = 5 minutes
+#define UPDATE_MIN_TIME 6000 // In milliseconds. 300000 = 5 minutes
 
 // Singleton instance of the radio driver
 RH_RF95 rf95;
@@ -232,9 +232,17 @@ void checkIncoming() {
           Serial.println(F("Failed to link to gate"));
         }
       } else if (opcode >= PAYLOAD_MIN && opcode <= PAYLOAD_MAX) {
+        attachRSSI( buf, from );
         sendDataPacket( buf, buf_len, nextNode );
       }
     }
+  }
+}
+
+void attachRSSI( uint8_t *packet, uint8_t from ) {
+  // Attach RSSI if sender is origin
+  if (packet[1] == from) {
+    packet[6] = rf95.lastRssi();
   }
 }
 
