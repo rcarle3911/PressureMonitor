@@ -9,7 +9,7 @@
 #include <RH_RF95.h>
 #define TXPOWER 5 // TX power in dbm. (Range of 5 - 23)
 
-#define MSG_MAX_LEN 7 // [Opcode: 1][Origin: 1][Payload: 4][RSSI: 1]
+#define MSG_MAX_LEN 11 // [Opcode: 1][Origin: 1][Payload: 4][RSSI: 1][VBATT: 4]
 
 // Opcodes
 #define SEEK_GATE 100
@@ -229,7 +229,7 @@ void loop() {
           node->lastMsg = timeClient.getEpochTime();
           
           // RSSI value and node reference
-          updateBlynkNode((int8_t)buf[6], node);
+          updateBlynkNode((int8_t)buf[6], decodeVBatt(buf), node);
           
           selectNode(node);
         } else if (DEBUG_ENABLED) {
@@ -312,7 +312,7 @@ void hour24toAMPM(uint8_t h, uint8_t m, char *buf) {
   buf[8] = '\0';
 }
 
-void updateBlynkNode(int8_t rssi, NodeMap *node) {
+void updateBlynkNode(int8_t rssi, float vbat, NodeMap *node) {
   // Node XXX
   char nodeName[10];
   // TIME, VBATT, RSSI
@@ -322,7 +322,7 @@ void updateBlynkNode(int8_t rssi, NodeMap *node) {
   hour24toAMPM(timeClient.getHours(), timeClient.getMinutes(), timeStr);
   //timeClient.getFormattedTime().toCharArray(timeStr, 10);
   sprintf_P(nodeName, PSTR("Node %d"), node->nodeID);
-  sprintf_P(infoLine, PSTR("%s, %sV, %3d RSSI"), timeStr, floatToString((micros() % 800) / 100.0), rssi);
+  sprintf_P(infoLine, PSTR("%s, %sV, %3d RSSI"), timeStr, floatToString(vbat), rssi);
   
   Blynk.virtualWrite(V0, F("update"), node->nodeID, infoLine, nodeName);
 }
@@ -367,6 +367,18 @@ float decodePayload(uint8_t *packet) {
 //    Serial.print(F("Received payload: "));Serial.println(pyld.num);Serial.flush();
 //  }
   return pyld.num;
+}
+
+float decodeVBatt(uint8_t *packet) {
+
+  FLOAT_ARRAY vbat;
+
+  vbat.bytes[0] = packet[7];
+  vbat.bytes[1] = packet[8];
+  vbat.bytes[2] = packet[9];
+  vbat.bytes[3] = packet[10];
+
+  return vbat.num;
 }
 
 uint8_t decodeBlinkPin( uint8_t *packet ) {

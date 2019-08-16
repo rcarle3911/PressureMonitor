@@ -4,12 +4,14 @@
 
 #define NODEID 10 // Make sure this is unique and less than 128
 
+#define BATTERY_PIN A0
+
 #include <RHReliableDatagram.h>
 #include <SPI.h>
 #include <RH_RF95.h>
 #define TXPOWER 5 // TX power in dbm. (Range of 5 - 23)
 
-#define MSG_MAX_LEN 7 // [Opcode: 1][Origin: 1][Payload: 4][RSSI: 1]
+#define MSG_MAX_LEN 11 // [Opcode: 1][Origin: 1][Payload: 4][RSSI: 1][VBATT: 4]
 
 // Opcodes
 #define SEEK_GATE 100
@@ -65,6 +67,14 @@ float sensor1ToFloat( uint16_t val ) {
   } else {
     return (val - 50) * 0.207;
   }
+}
+
+// Calibrate if needed
+// 0.0v = 0.0v = 0
+// 5.0v = 12.0v = 1024
+// 0.01171875 V per step
+float batToFloat( uint16_t val ) {
+  return val * 0.01171875;
 }
 
 struct SensorMap {
@@ -203,9 +213,10 @@ void loop() {
 
   checkIncoming(); // Waits for incoming messages and forwards them to the next node
   // Loops through all sensors and sends their data.
+  float bat = batToFloat( analogRead( BATTERY_PIN ));
   for ( byte i = 0; i < sizeof(sensors)/sizeof(SensorMap); i++) {
     if (millis() - sensors[i].lastSent > UPDATE_MIN_TIME) {
-      if (sendPressureData( i, sensors[i].toPressure( analogRead( sensors[i].pin ) ) )) {
+      if (sendPressureData( i, sensors[i].toPressure( analogRead( sensors[i].pin ) ), bat )) {
         sensors[i].lastSent = millis();
         break;
       }
@@ -255,12 +266,13 @@ bool linkToGate( uint8_t toNode ) {
   return sendDataPacket( buf, buf_len, toNode );
 }
 
-bool sendPressureData( uint8_t payloadID, float data ) {
+bool sendPressureData( uint8_t payloadID, float data, float battery ) {
 
   // Build packet
   buf[0] = PAYLOAD_MIN + payloadID;
 
   FLOAT_ARRAY pyld;
+  FLOAT_ARRAY vbat;
 
   pyld.num = data;
   buf[1] = NODEID;
@@ -268,6 +280,12 @@ bool sendPressureData( uint8_t payloadID, float data ) {
   buf[3] = pyld.bytes[1];
   buf[4] = pyld.bytes[2];
   buf[5] = pyld.bytes[3];
+
+  vbat.num = battery;
+  buf[7] = vbat.bytes[0];
+  buf[8] = vbat.bytes[1];
+  buf[9] = vbat.bytes[2];
+  buf[10] = vbat.bytes[3];
 
   return sendDataPacket(buf, buf_len, nextNode);
 }
